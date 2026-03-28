@@ -22,7 +22,19 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const SECRET = process.env.POLICY_SERVER_SECRET || 'compass-demo-secret-2026';
 
-app.use(cors({ origin: ['http://localhost:3000'], credentials: true }));
+const ALLOWED_ORIGINS = [
+  'http://localhost:3000',
+  'https://compass-dashboard-five.vercel.app',
+  /\.vercel\.app$/,
+];
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // allow server-to-server
+    const ok = ALLOWED_ORIGINS.some(o => typeof o === 'string' ? o === origin : o.test(origin));
+    cb(ok ? null : new Error('CORS'), ok);
+  },
+  credentials: true,
+}));
 app.use(express.json());
 
 // Auth middleware for agent calls
@@ -45,14 +57,45 @@ function getMultisigPda(): PublicKey | null {
   try { return new PublicKey(pda); } catch { return null; }
 }
 
+function keypairFromEnvOrFile(envVar: string, filePath?: string): Keypair | null {
+  // Try env var first (base64-encoded secret key array — for Railway/hosted)
+  const envVal = process.env[envVar];
+  if (envVal) {
+    try {
+      const raw = JSON.parse(Buffer.from(envVal, 'base64').toString('utf8'));
+      return Keypair.fromSecretKey(Uint8Array.from(raw));
+    } catch {}
+  }
+  // Fall back to file
+  if (filePath) {
+    try {
+      const fs = require('fs');
+      const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      return Keypair.fromSecretKey(Uint8Array.from(raw));
+    } catch {}
+  }
+  return null;
+}
+
 function getAgentKeypair(): Keypair | null {
-  const keyPath = process.env.AGENT_KEYPAIR_PATH;
-  if (!keyPath) return null;
+  const keyPath = process.env.AGENT_KEYPAIR_PATH
+    ? path.resolve(process.cwd(), '../../', process.env.AGENT_KEYPAIR_PATH.replace('./', ''))
+    : path.resolve(process.cwd(), '../../keys/agent.json');
+  return keypairFromEnvOrFile('AGENT_SECRET_KEY', keyPath);
+}
+
+async function getCaregiverKeypair(): Promise<Keypair | null> {
+  // Try env var (Railway / hosted)
+  const envVal = process.env.CAREGIVER_SECRET_KEY;
+  if (envVal) {
+    try {
+      const raw = JSON.parse(Buffer.from(envVal, 'base64').toString('utf8'));
+      return Keypair.fromSecretKey(Uint8Array.from(raw));
+    } catch {}
+  }
+  // Fall back to macOS Keychain (local dev)
   try {
-    const fs = require('fs');
-    const resolvedPath = path.resolve(process.cwd(), '../../', keyPath.replace('./', ''));
-    const rawKey = JSON.parse(fs.readFileSync(resolvedPath, 'utf8'));
-    return Keypair.fromSecretKey(Uint8Array.from(rawKey));
+    return await loadKeyFromKeychain();
   } catch {
     return null;
   }
@@ -125,7 +168,8 @@ app.post('/api/payment-request', requireSecret, async (req, res) => {
       const connection = getConnection();
       const destPubkey = new PublicKey(destination);
       const txIndex = await proposeTransfer(connection, agentKeypair, multisigPda, destPubkey, lamports);
-      const caregiverKeypair = await loadKeyFromKeychain();
+      const caregiverKeypair = await getCaregiverKeypair();
+      if (!caregiverKeypair) throw new Error('Caregiver keypair not available');
       txSignature = await approveAndExecute(connection, caregiverKeypair, multisigPda, txIndex);
       addToTodaySpend(lamports);
       console.log(`✅ Transaction executed: ${getExplorerUrl(txSignature)}`);
@@ -193,7 +237,8 @@ app.post('/api/pending/:id/approve', async (req, res) => {
   if (multisigPda && pending.transactionIndex) {
     try {
       const connection = getConnection();
-      const caregiverKeypair = await loadKeyFromKeychain();
+      const caregiverKeypair = await getCaregiverKeypair();
+      if (!caregiverKeypair) throw new Error('Caregiver keypair not available');
       const txIndex = BigInt(pending.transactionIndex);
       txSignature = await approveAndExecute(connection, caregiverKeypair, multisigPda, txIndex);
       addToTodaySpend(pending.request.lamports);
@@ -267,7 +312,8 @@ app.get('/api/events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('Access-Control-Allow-Origin', 'http://localhost:3000');
+  const origin = req.headers.origin || 'http://localhost:3000';
+  res.setHeader('Access-Control-Allow-Origin', origin);
   res.flushHeaders();
 
   // Send a heartbeat comment every 30s to keep connection alive
