@@ -1,0 +1,21 @@
+{
+  "name": "compass",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Caregiver-controlled financial safety layer for AI agents on Solana",
+  "scripts": {
+    "dev": "pnpm --filter dashboard dev",
+    "dev:server": "pnpm --filter policy-server dev",
+    "dev:all": "concurrently \"pnpm dev:server\" \"pnpm dev\"",
+    "build": "pnpm --filter dashboard build",
+    "provision": "tsx scripts/provision.ts",
+    "fund": "tsx scripts/fund-devnet.ts",
+    "demo": "tsx scripts/demo-scenarios.ts"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}
